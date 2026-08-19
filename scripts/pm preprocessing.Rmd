@@ -1,0 +1,626 @@
+---
+title: "preprocessing"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'h', 
+  echo = FALSE,    # Hide code by default
+  warning = FALSE, # Hide warnings by default
+  message = FALSE, # Hide messages by default
+  error = FALSE    # Hide errors by default
+)
+```
+
+Note to self 21.01.24. you want to load in all data without grouping (so including quest data, but not grouping of survey data so that you can exclude participants from calculations in the analysis script)
+
+# libraries
+```{r, echo=T, message=FALSE, warning=FALSE}
+# let's load in the libraries we need for the following session. 
+library(tidyverse)
+library(readxl) 
+library(stringr)
+```
+
+# load experiment data
+note: for map_df() to work this markdown must be placed within the actual data folder. i.e. it has to be here: "..\data"
+```{r, echo=T, message=FALSE, warning=FALSE}
+pm_import <-
+    list.files(pattern = "n49w|eu79|tfo5|3k5q", recursive = T) %>% #search all files in all directories contain the string in pattern
+    map_df(~read_csv(., col_types = cols(.default = "c"))) #return data frames by row- or column-binding the outputs together.
+```
+
+# preprocessing
+check import
+select columns/rename 
+
+## check import
+
+```{r, warning = F, message=F}
+# check for number of versions and observations in. 
+pm_import$'Experiment ID' <- factor(pm_import$'Experiment ID') 
+levels(pm_import$'Experiment ID')
+summary(pm_import$'Experiment ID')
+#142915 is nsl with high quality images, 146116 low quality, and 142915 is rsl, nas are white spaces between file concatenation
+```
+
+## choose columns/rename
+```{r, warning = F, message=F}
+pm_selected <-
+  pm_import %>%
+  dplyr::select(
+    "Participant Private ID",
+    "Response Type",
+    "Response",
+    "Spreadsheet: display",
+    "Spreadsheet: picture",
+    "Spreadsheet: condition",
+    "Trial Number", 
+    "Spreadsheet",
+    "Spreadsheet: item",
+    "Spreadsheet: trial",
+    "Reaction Time") %>% 
+  rename(
+    "id"= "Participant Private ID",
+    "type" = "Response Type",
+    "response" = "Response",
+    "target"= "Spreadsheet: display",
+    "pic_id" = "Spreadsheet: picture",
+    "oops" ="Spreadsheet: condition",
+    "trial" = "Trial Number",
+    "list" = "Spreadsheet",
+    "item" = "Spreadsheet: item",
+    "trial_type" = "Spreadsheet: trial",
+    "raw_rt" = "Reaction Time")
+```
+
+## filter
+
+```{r, warning = F, message=F}
+# parse out only the rows we need (response is key-presses to items, target is not the foils)
+distinct(pm_selected, type)
+distinct(pm_selected, trial_type)
+distinct(pm_selected, response)
+distinct(pm_selected, target)
+distinct(pm_selected, pic_id)
+distinct(pm_selected, oops)
+
+pm_subset <-
+  pm_selected %>%
+  filter(type == "response", #only responses to trials gorilla
+         trial_type == "target") #only experimental trials
+```
+
+## list check 
+check number of participants per list
+```{r, warning = F, message=F}
+#participants per list
+pm_subset %>%
+    group_by(list) %>% 
+    summarize(count = n_distinct(id))
+
+```
+
+# control response vars
+Accuracy was not calculated in Gorilla, but is instead determined here.
+
+## accuracy calc
+if response (match/nomatch) = target (match/nomatch) then correct (1), if not incorrect (0)
+```{r}
+distinct(pm_selected, response)
+distinct(pm_selected, target)
+
+pm_subset_accuracy <- pm_subset %>% mutate(correct = if_else(response == target, 1, 0))
+# View(pm_subset_accuracy)
+item_accuracy <- pm_subset_accuracy %>%
+  group_by(item) %>%
+  summarise(mean_acc = mean(correct)) %>% 
+  arrange(mean_acc)
+item_accuracy #global
+ 
+participant_accuracy <- pm_subset_accuracy %>%
+  group_by(id,list) %>%
+  summarise(mean_acc = mean(correct)) %>% 
+  arrange(mean_acc)
+participant_accuracy #participant by list
+```
+
+## rt calc
+separate by language
+import and merge sign_start data into individual language dfs
+calculate actual rt by language
+
+```{r, warning = F, message=F}
+#separate by language
+data_factors <- pm_subset_accuracy %>%  mutate_if(is.character, as.factor)
+data_factors$language <- data_factors$list 
+head(data_factors)
+str(data_factors)
+data_factors <- data_factors %>% mutate(language = recode(language, 
+                          nsl_list1 = "nsl",
+                          nsl_list2 = "nsl",
+                          rsl_list1 = "rsl",
+                          rsl_list2 = "rsl"))
+data_factors
+data_factors$raw_rt <- as.numeric(as.character(data_factors$raw_rt)) #convert to numeric (double returned wack values)
+
+nsl_subset <- subset(data_factors, language == "nsl") %>% droplevels()
+rsl_subset <- subset(data_factors, language == "rsl") %>% droplevels()
+str(nsl_subset)
+str(rsl_subset)
+```
+
+### import and merge sign_start data into main df
+the time in the video where the signer begins to produce the sign. this must be subtracted from the raw rt to arrive at the actual rt
+```{r, warning = F, message=F}
+# import and merge sign_start data into individual language dfs
+signstart_import <- read_excel("DEPICT WP1 stimuli list.xlsx", sheet = "masterlist")
+
+#nsl
+nsl_signstart <- select(signstart_import, c("item","NSL_sign_start"))
+head(nsl_signstart)
+
+#rsl
+rsl_signstart <- select(signstart_import, c("item","RSL_sign_start"))
+head(rsl_signstart)
+signstart <- merge(nsl_signstart,rsl_signstart, by = "item")
+head(signstart)
+prertcalc_df <- merge(data_factors, signstart, by = "item")
+head(prertcalc_df)
+```
+
+### calculate actual rt by language
+```{r}
+rtcalc_df <- prertcalc_df %>%
+  mutate(rt = case_when(
+    language == "rsl" ~ raw_rt - RSL_sign_start,
+    language == "nsl" ~ raw_rt - NSL_sign_start,
+    TRUE ~ NA_real_  # Handles other cases (if any)
+))
+```
+
+# redo condition values
+Randomization in Gorilla caused the column "condition" to incorrectly align with responses.
+
+## nsl lists
+Recreate from picture id such that for:
+nsl lists all pic_id ending in 1 = aligned, ending in 2 = misaligned
+
+```{r}
+#redo lang subsetting
+nsl_subset2 <- subset(rtcalc_df, language == "nsl") %>% droplevels()
+
+#create new column with pic_id ending in 1 = aligned, 2 = misaligned using stringr:separate()
+
+head(nsl_subset2)
+str(nsl_subset2)
+nsl_subset_recode_prep <- nsl_subset2 %>% separate(pic_id, c("item_id", "pic_num"), sep = " ") %>% #split at the space
+  mutate_if(is.character,as.factor)%>%  #convert strings to factors again 
+  separate(pic_num, into = c("pic_num", "jpg"), sep = "\\.") %>% #split at period but don't include the period
+  mutate_if(is.character,as.factor) %>% 
+  select(-jpg) #select cols
+head(nsl_subset_recode_prep)
+str(nsl_subset_recode_prep)
+
+nsl_subset_recoded <- nsl_subset_recode_prep %>%
+  mutate(condition = if_else(pic_num == "1", "aligned", "nonaligned")) %>%  #recode pic 1 as aligned
+  mutate_if(is.character,as.factor)
+head(nsl_subset_recoded)
+str(nsl_subset_recoded)
+```
+
+##rsl_lists
+rsl lists all pic_id ending in 2 = aligned, ending in 1 = misaligned (except for the cognates. for these 1 = aligned, 2 = misaligned). hence:
+
+noncognate list: "Cabbage", "Engagement", "Color", "Doll", "East", "Frog", "Gorilla", "Magazine", "Ring", "Salt", "School", "Pain", "Call", "Come", "Doubt", "Play", "Choose", "Sail", "Show", "Sneeze", "Travel", "Try", "Wait", "Win"
+
+cognate list: "Beauty", "Book", "Boy", "Children", "Coffee", "Cigar", "Eagle", "Family", "Flower", "Change", "Metal", "Telephone", "Breathe", "Cry", "Jump", "Leave", "Lose", "Paint", "Run", "Sing", "Take", "Think", "Watch"
+
+
+```{r}
+#redo language subsetting
+rsl_subset2 <- subset(rtcalc_df, language == "rsl") %>% droplevels()
+
+##create new column with pic_id ending in 1 = aligned, 2 = misaligned using stringr:separate()
+head(rsl_subset2)
+str(rsl_subset2)
+rsl_subset_recode_prep <- rsl_subset2 %>% separate(pic_id, c("item_id", "pic_num"), sep = " ") %>% #split at the space
+  mutate_if(is.character,as.factor) %>% #convert strings to factors again
+  separate(pic_num, into = c("pic_num", "jpg"), sep = "\\.") %>%  #split at period, but don't include the period
+  mutate_if(is.character,as.factor) %>% 
+  select(-jpg) #drop extra column
+head(rsl_subset_recode_prep)
+str(rsl_subset_recode_prep)
+
+# recode noncognates
+rsl_subset_noncognates <- rsl_subset_recode_prep %>% 
+  filter(item_id %in% c("Cabbage", "Engagement", "Color", "Doll", "East", "Frog", "Gorilla", "Magazine", "Ring", "Salt", "School", "Pain", "Call", "Come", "Doubt", "Play", "Choose", "Sail", "Show", "Sneeze", "Travel", "Try", "Wait", "Win")) %>% 
+  droplevels()
+head(rsl_subset_noncognates)
+levels(rsl_subset_noncognates$item)
+rsl_subset_noncognates_recoded <- rsl_subset_noncognates%>% 
+  mutate(condition = if_else(pic_num == "2", "aligned", "nonaligned")) %>% #recode pic 2 as aligned
+  mutate_if(is.character,as.factor)
+head(rsl_subset_noncognates_recoded)
+str(rsl_subset_noncognates_recoded)
+
+# recode cognates
+rsl_subset_cognates <- rsl_subset_recode_prep %>% 
+  filter(item_id %in% c("Beauty", "Book", "Boy", "Children", "Coffee", "Cigar", "Eagle", "Family", "Flower", "Change", "Metal", "Telephone", "Breathe", "Cry", "Jump", "Leave", "Lose", "Paint", "Run", "Sing", "Take", "Think", "Watch", "Write")) %>% 
+  droplevels()
+head(rsl_subset_cognates)
+levels(rsl_subset_cognates$item_id)
+rsl_subset_cognates_recoded <- rsl_subset_cognates %>% 
+  mutate(condition  = if_else(pic_num == "1", "aligned", "nonaligned")) %>% #recode pic 1 as aligned
+  mutate_if(is.character,as.factor)
+head(rsl_subset_cognates_recoded)
+str(rsl_subset_cognates_recoded)
+
+# rbind both frame back together
+rsl_subset_recoded <- rbind(rsl_subset_cognates_recoded, rsl_subset_noncognates_recoded) 
+
+```
+
+## recombine recoded condition dfs
+
+```{r}
+pm_data <- rbind(nsl_subset_recoded,rsl_subset_recoded)  %>% mutate_if(is.character,as.factor)
+head(pm_data)
+str(pm_data)
+```
+
+## check that the error is fixed
+```{r}
+# Filtered by 1 nsl participant 9462565 (list1)
+# checked that cabbage 1 (noncognate) is now coded as "aligned" (was incorrectly labeled "different" in gorilla export)
+# checked that gorilla 2 (noncognate) is now coded as "misaligned" (was correctly labeled "different" in the gorilla export)
+# 
+# checked that beauty 1 (cognate) is now coded as "aligned" (was incorrectly labeled "different" in the gorilla export)
+# checked that eagle 2 (cognate) is now coded as "misaligned" (was correctly labeled "different" in the gorilla export)
+# 
+# Filtered by 1 rsl participant 9377336 (list2)
+# checked that cabbage 1 (noncognate) coded as "misaligned" (was correctly labeled "different" in the gorilla export)
+# checked that gorilla 2 (noncognate) coded as "aligned" (was correctly labeled "same" in the gorilla export)
+# 
+# checked that beauty 1 (cognate) is now coded as "aligned" (was incorrecly labeled "different" in the gorilla export)
+# checked that eagle 2 (cognate) is now coded as "misaligned" (was correctly labeled "different" in the gorilla export)
+str(pm_data)
+pm_data_filtered <- pm_data %>%
+  filter(id %in% c(9462565, 9377336),
+         item %in% c("cabbage", "gorilla", "beauty", "eagle"),
+         pic_num %in% c(1,2),
+         condition %in% c("aligned", "misaligned"),
+         oops %in% c("same","different")) %>% 
+  select(id, list, item, trial, pic_num,oops, condition, rt) %>% 
+  mutate(cognate = ifelse(item %in% c("beauty", "cabbage"), "cognate", "noncognate")) %>% 
+  arrange(cognate, pic_num)
+pm_data_filtered
+
+check_filter <-
+  pm_data_filtered %>%
+  group_by(condition,cognate,oops) %>%
+  summarise(average = mean(rt)) %>%
+  arrange(condition, desc(average))
+check_filter
+```
+
+## create cognate column
+```{r}
+cognates <- c("Beauty", "Book", "Boy", "Children", "Coffee", "Cigar", "Eagle", "Family", "Flower", "Change", "Metal", "Telephone", "Breathe", "Cry", "Jump", "Leave", "Lose", "Paint", "Run", "Sing", "Take", "Think", "Watch", "Write")
+noncognates <- c("Cabbage", "Engagement", "Color", "Doll", "East", "Frog", "Gorilla", "Magazine", "Ring", "Salt", "School", "Pain", "Call", "Come", "Doubt", "Play", "Choose", "Sail", "Show", "Sneeze", "Travel", "Try", "Wait", "Win")
+
+pm_data_conds <- pm_data %>%
+  mutate(cognate = case_when(
+    .$item_id %in% cognates ~ "cognate",
+    .$item_id %in% noncognates ~ "noncognate",
+    TRUE ~ "other"
+  ))
+head(pm_data_conds)
+```
+
+
+
+## select only needed vectors
+```{r}
+experiment_df <- pm_data_conds %>% select(id, list, item, trial, language, condition, cognate, correct, rt)
+head(experiment_df)
+```
+
+# itemvars_df
+## import wordclass, frequency, and homophone status  
+```{r, warning = F, message=F}
+itemsvars_import <- read_excel("DEPICT WP1 stimuli list.xlsx", sheet = "masterlist")
+
+# wordclass, homophone, boundedness, plurality
+itemvars <- select(itemsvars_import, c("item","wordclass", "homophone", "boundedness","plurality"))
+head(itemvars)
+itemvars_df <- itemvars
+  # select(-language,-list,-id,-trial,-condition,-correct, -rt)
+```
+
+## frequency
+n.b. before pushing to osf uncouple experiment_df from itemvars_df
+```{r}
+#nsl
+nsl_freq <- select(itemsvars_import, c("item","nsl_log", "norsk_log")) #%>%
+head(nsl_freq)
+
+#rsl
+rsl_freq <- select(itemsvars_import, c("item","rsl_log","rusisk_log")) #%>%
+head(rsl_freq)
+
+# #merge nsl, rsl freq
+freq <- merge(nsl_freq,rsl_freq, by = "item")
+head(freq)
+str(freq)
+
+freq_df0 <- merge(experiment_df, freq, by = "item") #this is where you should uncouple
+head(freq_df0)
+ 
+# merge columns nsl and rsl log into "freq"
+freq_df1<- freq_df0 %>%
+   mutate(freq = ifelse(language == "nsl", nsl_log, rsl_log))%>%
+   select(-c(nsl_log, rsl_log))
+head(freq_df1)
+
+#bin freq into high and low
+freq_df <- freq_df1 %>%
+  mutate(median_freq = median(freq),
+         freq_bin = ifelse(freq > median_freq, 'high', 'low')) %>%
+  select(-c(median_freq))
+head(freq_df)
+
+#remerge into itemvars_df
+itemsvars_df1 <- merge(freq_df, itemvars_df, by = "item")
+head(itemsvars_df1)
+
+itemvars_df <- itemsvars_df1
+rm(itemsvars_df1, freq_df, freq_df0, freq_df1)
+```
+
+#survey_df
+## load survey data 
+```{r, echo=T, message=FALSE, warning=FALSE}
+survey_import <-
+    list.files(pattern = "qcg3|1v1w", recursive = T) %>% #search all files in all directories contain the string in pattern
+    map_df(~read_csv(., col_types = cols(.default = "c"))) #return data frames by row- or column-binding the outputs together.
+```
+
+## choose columns
+```{r}
+survey1 <- select(survey_import, c("Participant Private ID", "Tree Node Key","Response Type","Response","Object Name", "Spreadsheet: item"))
+head(survey1)
+survey2 <- survey1  %>% rename("id" = "Participant Private ID", #participant
+                           "window" = "Response Type", #all gorilla windows with variables of interest
+                           "question"= "Object Name", # question type (Familiarity,Use, Similarity)
+                           "item" = "Spreadsheet: item", #item
+                           "rating" = "Response", #question response
+                           "language" = "Tree Node Key") #participant group
+head(survey2)
+survey3 <- subset(survey2, window %in% c("response")) #only responses to items
+head(survey3)
+survey4 <- survey3 %>% mutate(language = recode(language,
+                          'task-qcg3' = "nsl",
+                          'task-1v1w' = "rsl"))
+survey_spread <- survey4 %>% spread(key = question, value = rating) %>% 
+  rename(Iconicity = Similarity)
+head(survey_spread)
+rm(survey_import, survey1, survey2, survey3, survey4)
+
+```
+
+## bin use, familiarity, and iconicity
+```{r}
+#convert strings to numbers
+survey_spread$Familiarity <- as.numeric(as.character(survey_spread$Familiarity))
+survey_spread$Iconicity <- as.numeric(as.character(survey_spread$Iconicity))
+
+# summarize condition means by item and language
+
+survey_item_means <-
+  survey_spread %>%
+  group_by(item,language,id) %>%
+  reframe(
+    Use = mean(Use == "yes"),
+    Familiarity = mean(Familiarity),
+    Iconicity = mean(Iconicity)
+    ) %>%
+  arrange(item)
+survey_item_means
+
+nsl_survey_item_means <- subset(survey_item_means, language == "nsl")
+rsl_survey_item_means <- subset(survey_item_means, language == "rsl")
+```
+
+### nsl
+nsl bin for use, familiarity, and iconicity
+```{r}
+## get means
+nsl_use_mean <- mean(nsl_survey_item_means$Use, na.rm = TRUE)
+nsl_iconicity_mean <- mean(nsl_survey_item_means$Iconicity, na.rm = TRUE)
+nsl_familiarity_mean <- mean(nsl_survey_item_means$Familiarity, na.rm = TRUE)
+nsl_freq_mean <- mean(freq$nsl_log, na.rm = TRUE)
+
+## bin
+nsl_survey_item_means$use_bin <- ifelse(nsl_survey_item_means$Use > nsl_use_mean, "high", "low")
+nsl_survey_item_means$icon_bin <- ifelse(nsl_survey_item_means$Iconicity > nsl_iconicity_mean, "high", "low")
+nsl_survey_item_means$fam_bin <- ifelse(nsl_survey_item_means$Familiarity > nsl_familiarity_mean, "high", "low")
+# View(nsl_survey_item_means)
+# rm(nsl_use_mean, nsl_iconicity_mean, nsl_familiarity_mean)
+```
+
+### rsl
+rsl bin for use, familiarity, and iconicity
+```{r}
+## get means
+rsl_use_mean <- mean(rsl_survey_item_means$Use, na.rm = TRUE)
+rsl_iconicity_mean <- mean(rsl_survey_item_means$Iconicity, na.rm = TRUE)
+rsl_familiarity_mean <- mean(rsl_survey_item_means$Familiarity, na.rm = TRUE)
+
+## bin
+rsl_survey_item_means$use_bin <- ifelse(rsl_survey_item_means$Use > rsl_use_mean, "high", "low")
+rsl_survey_item_means$icon_bin <- ifelse(rsl_survey_item_means$Iconicity > rsl_iconicity_mean, "high", "low")
+rsl_survey_item_means$fam_bin <- ifelse(rsl_survey_item_means$Familiarity > rsl_familiarity_mean, "high", "low")
+rsl_survey_item_means
+# rm(rsl_use_mean, rsl_iconicity_mean, rsl_familiarity_mean)
+```
+
+### recombine and select cols
+```{r}
+# rbind nsl and rsl bins
+survey_item_means_bin <- rbind(nsl_survey_item_means, rsl_survey_item_means) %>%
+  select(item, language, id, use_bin, icon_bin, fam_bin)
+survey_item_means_bin
+
+# merge back into full survey with by-participant values
+head(survey_spread)
+head(survey_item_means_bin)
+
+survey_bin <- left_join(survey_spread, survey_item_means_bin, by = c("item"="item","language"="language","id"="id")) %>% select(-window)
+head(survey_bin)
+# rm(survey_item_means_bin)
+str(survey_bin)
+survey_df <- select(survey_bin, c("id","item","language", "Familiarity", "Iconicity", "Use", "fam_bin","icon_bin","use_bin"))# only needed columns 
+head(survey_df)
+# View(survey_df)
+```
+
+
+# load language background data (quest)
+load and merge lg bg data
+  1_dob-year
+  4_handedness-quantised (1 = right, left = 2, both = 3)
+  5_hearinglevel-quantised (1 = serious,2 = considerable, 3 = moderate, 4 = mild)
+  6_hearing-aids-quantised (1 = yes, 2 = no)
+  6a_CI-quantised (1 = yes, 2 = no)
+  8_born-deaf-quantised (yes = 1, 2 = no)
+  9_SL-exposure (free answer)
+  10_SL-introduction-path-quantised (1 = parents, 2 = siblings, 3 = caregiver, 4 = school, 5 = annet)
+  12_SL-peers-quantised (yes = 1, 2 = no)
+  13_college-quantised (yes = 1, 2 = no)
+  15_freq-of-use-quantised (1= everyday, 2 = several times a week, 3 = once a week, 4= within a month, 5 = very rarely, 6 = never)
+  16_preferred-language-quantised (1 = sign language, 2 = written norwegian/russian, 3 = spoken norwegian/russian, 4 = both, 5 = other)
+
+```{r}
+quest_wide <- list.files(pattern = "zt1x|3kt6", recursive = T) %>% #search all files in all directories contain the string in pattern
+    map_df(~read_csv(., col_types = cols(.default = "c"))) #return data frames by row- or column-binding the outputs together.
+#zt1x = nsl
+#3kt6 = rsl
+
+head(quest_wide)
+```
+
+## select columns from full survey
+```{r}
+quest_select <- quest_wide %>%
+  select("Participant Private ID", "Question Key", "Response") %>% 
+  rename(
+    "id"= "Participant Private ID",
+    "question" = "Question Key",
+    "response" = "Response") %>%
+  filter(question %in% 
+           c("1_dob-year",
+             "4_handedness-quantised",
+             "5_hearinglevel-quantised",
+             "8_born-deaf-quantised",
+             "9_SL-exposure",
+             "10_SL-introduction-path-quantised",
+             "12_SL-peers-quantised",
+             "15_freq-of-use-quantised"))
+str(quest_select)
+```
+
+## rename values
+
+```{r}
+# rename values
+quest_wide_renamed <- quest_select %>%
+  mutate(response = case_when(
+    question == "4_handedness-quantised" & response == 1 ~ "right",
+    question == "4_handedness-quantised" & response == 2 ~ "left",
+    question == "4_handedness-quantised" & response == 3 ~ "both",
+    
+    question == "5_hearinglevel-quantised" & response == 1 ~ "serious",
+    question == "5_hearinglevel-quantised" & response == 2 ~ "considerable",
+    question == "5_hearinglevel-quantised" & response == 3 ~ "moderate",
+    question == "5_hearinglevel-quantised" & response == 4 ~ "mild",
+    
+    question == "8_born-deaf-quantised" & response == 1 ~ "yes",
+    question == "8_born-deaf-quantised" & response == 2 ~ "no",
+    
+    question == "10_SL-introduction-path-quantised" & response == 1 ~ "parents",
+    question == "10_SL-introduction-path-quantised" & response == 2 ~ "siblings",
+    question == "10_SL-introduction-path-quantised" & response == 3 ~ "caregiver",
+    question == "10_SL-introduction-path-quantised" & response == 4 ~ "school",
+    question == "10_SL-introduction-path-quantised" & response == 5 ~ "other",
+    
+    question == "12_SL-peers-quantised" & response == 1 ~ "yes",
+    question == "12_SL-peers-quantised" & response == 2 ~ "no",
+    
+    question == "15_freq-of-use-quantised" & response == 1 ~ "daily",
+    question == "15_freq-of-use-quantised" & response == 2 ~ "often",
+    question == "15_freq-of-use-quantised" & response == 3 ~ "weekly",
+    question == "15_freq-of-use-quantised" & response == 4 ~ "monthly",
+    question == "15_freq-of-use-quantised" & response == 5 ~ "rarely",
+    question == "15_freq-of-use-quantised" & response == 6 ~ "never",
+  TRUE ~ as.character(response)
+  )  )
+head(quest_wide_renamed)
+
+```
+
+## spread 
+such that question is in separate columns
+```{r}
+quest_spread <- quest_wide_renamed %>%
+  group_by(id, question) %>%
+  summarise(response = first(response)) %>% # first group,
+  spread(key = question, value = response) %>% # then spread,
+  rename( #then rename
+    age = "1_dob-year",
+    handedness = "4_handedness-quantised", 
+    hearing = "5_hearinglevel-quantised",
+    deafbirth = "8_born-deaf-quantised",
+    exposure = "9_SL-exposure",
+    learned =  "10_SL-introduction-path-quantised",
+    peers = "12_SL-peers-quantised",
+    practice ="15_freq-of-use-quantised"
+    ) %>% 
+  mutate(age = 2023 - as.numeric(age)) #then calc age
+quest_df <- quest_spread
+# View(quest_df)
+```
+
+## merge with survey
+```{r}
+survey_quest_df <- left_join(survey_df, quest_df, by = c("id"="id"))
+head(survey_quest_df)
+# write.csv(survey_quest_df, "quest_check.csv")
+
+```
+
+
+# merge everything
+experiment_df, survey_df, quest_df, itemvars_df
+note that experiment_df is already in itemvars_df pga frequency bin
+survey and quest dfs are already merged in survey_quest_df
+```{r}
+head(experiment_df)
+head(itemvars_df)
+head(survey_df)
+head(quest_df)
+
+merged_df <- left_join(itemvars_df, survey_quest_df, by = c("id"="id","item"="item","language"="language"))
+head(merged_df)
+```
+
+
+# export to csv
+```{r}
+write.csv(merged_df, "pm_osf_dataframe_with_survey_quest.csv")
+```
+
+
+
+

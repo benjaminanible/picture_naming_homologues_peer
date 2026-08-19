@@ -1,0 +1,914 @@
+---
+title: 'PM manuscript reported statistics'
+subtitle: '§3. Methods (selected), §4. Data analysis (selected)'
+output:
+  word_document:
+    toc: true
+    toc_depth: 2
+  html_document:
+    toc: true
+    toc_depth: '2'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+header-includes: \usepackage{float} \floatplacement{figure}{H}
+bibliography: PM.bib
+editor_options:
+  chunk_output_type: console
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(
+  fig.pos = 'h',   # center figures by default
+  echo = FALSE,    # Hide code by default
+  warning = FALSE, # Hide warnings by default
+  message = FALSE, # Hide messages by default
+  error = FALSE,   # Hide errors by default
+  results = FALSE  # No really hide code 
+)
+```
+
+```{r echo = F, results = 'hide', message=FALSE, warning=FALSE}
+# Libraries and functions
+
+#r 2.0 
+library(tidyverse) #tidyr functions
+
+#plotting libraries and functions
+devtools::source_gist("2a1bb0133ff568cbe28d", filename = "geom_flat_violin.R") # raincloud plots. 
+#source = 10.7287/peerj.preprints.27137v1
+library(pixiedust) #cleaned up regression results 
+# https://cran.r-project.org/web/packages/pixiedust/vignettes/pixiedust.html
+number_ticks <- function(n) {function(limits) pretty(limits, n)} #pretty scale breaks function
+library(patchwork) #combined plotting with ggplot2
+se <- function(x) sqrt(var(x)/length(x))
+
+#function for removing objects with a specific prefix
+remove_objects_with_prefix <- function(prefix) {
+  all_objects <- ls(envir = .GlobalEnv)
+  target_objects <- grep(paste0("^", prefix), all_objects, value = TRUE)
+  rm(list = target_objects, envir = .GlobalEnv)
+}
+
+#mixed effects libraries
+library(lme4) #for lmer()
+library(lmerTest) #mixed model p values 
+library(sjPlot) #for plot_model()
+library(jtools) #for a more legible summary() function called summ()
+library(optimx) #lme optimizations (L-BFGS-B or nlminb)
+library(MuMIn) #r2 calculation
+library(broom) # model estimates
+```
+
+```{r}
+#load data
+data <- read_csv("../data/pm_osf_dataframe_with_survey_quest.csv") #import
+data <- select(data, -1)  #remove indexing column
+str(data)
+data <- data %>% mutate_if(is.character, as.factor)  #strs to factors
+```
+
+# 3. Methods
+
+## 3.1 Participants
+```{r}
+part_acc_sum <- data |> 
+  group_by(language) %>%
+  reframe( 
+    N = n_distinct(id),
+    accuracy = mean(correct),
+    sd = sd(correct)) %>% 
+    arrange(accuracy)
+part_acc_sum
+
+lg_acc_id <- 
+  data %>%
+  group_by(id, language) %>%
+  reframe(
+    accuracy = mean(correct)) %>%
+    arrange(accuracy)
+lg_acc_id
+
+data_tp <- #"trimmed participants"
+  data %>% 
+  filter(!(id %in% c(9479027, 9493027)))
+
+# not reported with this level of detail: There were large differences in how well the two groups were able to complete the online experiment, with the NSL group having much lower accuracy [*M* = `r round(part_acc_sum$accuracy  [1],2)`, *SD* = `r round(part_acc_sum$sd [1],2)`], than the RSL group [*M* = `r round(part_acc_sum$accuracy [2],2)`, *SD* = `r round(part_acc_sum$sd [2],2)`]. Possibly age was a factor in this as the mean age was about 10 years younger for the RSL group [*M* = `r round(demo_sum$age_mean [2],2)` (`r round(demo_sum$age_min [2],2)` -- `r round(demo_sum$age_max [2],2)`)] compared to the NSL group [*M* = `r round(demo_sum$age_mean [1],2)` (`r round(demo_sum$age_min [1],2)` -- `r round(demo_sum$age_max [1],2)`)].
+```
+
+
+```{r}
+demo_sum_trim <-
+  data_tp %>%
+  group_by(language) %>%
+  summarise( 
+    N = n_distinct(id),
+    age_mean = mean(age),
+    age_sd = sd(age),
+    age_min = min(age),
+    age_max = max(age)
+    ) 
+demo_sum_trim
+
+
+demo_sum_deaf <-
+  data_tp %>%
+  group_by(language,deafbirth) %>%
+  summarise( 
+    N = n_distinct(id)
+  )
+demo_sum_deaf   
+
+demo_sum_hearing <-
+  data_tp %>%
+  group_by(language,hearing) %>%
+  summarise( 
+    N = n_distinct(id)
+  )
+demo_sum_hearing
+
+demo_sum_exposure <-
+  data_tp %>%
+  group_by(language) %>%
+  summarise( 
+    exposure_mean = mean(exposure),
+    exposure_sd = sd(exposure)
+  )
+demo_sum_exposure
+
+demo_sum_practice <-
+  data_tp %>%
+  group_by(language,practice) %>%
+  summarise( 
+    N = n_distinct(id)
+  )
+demo_sum_practice
+
+demo_sum_peers <-
+  data_tp %>%
+  group_by(language,peers) %>%
+  summarise( 
+    N = n_distinct(id)
+  )
+demo_sum_peers
+
+data_tp <- data_tp %>%
+  mutate(learned_grouped = factor(ifelse(learned == "parents", "parents", "network")))
+str(data_tp)
+# summary(data_tp2$learned_grouped)
+
+demo_sum_learned <-
+  data_tp %>%
+  group_by(language,learned_grouped) %>%
+  summarise(
+    N = n_distinct(id)
+  )
+demo_sum_learned
+```
+
+Forty-five Norwegian and Russian deaf individuals participated in the study. Two Norwegian participants were excluded due to having less than 50% accuracy (see §4 for how accuracy was calculated) resulting in 19 Norwegian participants `r demo_sum_trim$age_min [1]` -- `r demo_sum_trim$age_max [1]` years old (*M* = `r round(demo_sum_trim$age_mean [1],2)`, *SD* = `r round(demo_sum_trim$age_sd [1],2)`) and 24 Russian participants `r demo_sum_trim$age_min [2]` -- `r demo_sum_trim$age_max [2]` years old (*M* = `r round(demo_sum_trim$age_mean [2],2)`, *SD* = `r round(demo_sum_trim$age_sd [2],2)`). Half reported being deaf from birth with an average age of sign language exposure of approximately ten years old for Norwegians (*M* = `r round(demo_sum_exposure$exposure_mean [1],2)`, *SD* = `r round(demo_sum_exposure$exposure_sd [1],2)`) and five years old for Russians (*M* = `r round(demo_sum_exposure$exposure_mean [2],2)`,*SD* = `r round(demo_sum_exposure$exposure_sd [2],2)`). The majority in both groups reported having considerable to serious hearing loss (>= 71 dB) and also using signed communication "daily". The majority also reported having had the opportunity to use sign language with their peers in school during their formative years [n(NSL) = `r demo_sum_peers$N [2]`, n(RSL) = `r demo_sum_peers$N [4]`]. A larger proportion of Russian participants learned RSL from their parents (n = `r demo_sum_learned$N [4]`) compared to other avenues (n = `r demo_sum_learned$N [3]`) as opposed to Norwegians who primarily learned NSL from their social networks (n =`r demo_sum_learned$N [1]`) rather than their parents (n = `r demo_sum_learned$N [2]`).
+
+
+## 3.2 Materials 
+### Homophones
+```{r}
+colnames(data_tp)
+homophones <-
+  data_tp %>% #trimmed participants
+  group_by(homophone) %>%
+  summarise( 
+    N = n_distinct(item)
+  )
+homophones
+```
+(...) 
+Homologue status was determined on the basis of overlap in both form and meaning. All items categorized as homologues had equivalent translations as judged by the researchers in consultation with our deaf consultants. For form, overlap in a selection of five phonological parameters (handshape, location, movement, orientation, and handedness) was classified as a homophone. Overlap in at least four of five parameters was classified as “exact” (n = `r homophones$N[2]`), and overlap in at least three as “near” (n = `r homophones$N[3]`). (...)
+
+### Frequency
+```{r}
+#remove five items for which values were unavailable
+corr_data <- subset(data, !item %in% c("eagle","family","metal","trip","engaged","east"))
+corr_data$item <- factor(corr_data$item)
+```
+#### Norwegian
+```{r}
+nsl_corr_data <- subset(corr_data, language == "nsl")
+
+nsl_freq_means <- nsl_corr_data %>%
+  group_by(item, cognate) %>%
+  summarise(
+    Use = mean(Use == "yes", na.rm = TRUE), 
+    freq_norsk = mean(norsk_log, na.rm = TRUE),
+    Iconicity = mean(Iconicity, na.rm = TRUE),
+    freq_nsl = mean(freq, na.rm = TRUE)
+  ) %>%
+  arrange(item)
+nsl_freq_means
+
+nsl_correlation <- cor.test(nsl_freq_means$freq_norsk, nsl_freq_means$freq_nsl, method = "pearson")
+# nsl_correlation$estimate
+# nsl_correlation$p.value
+```
+#### Russian
+```{r}
+rsl_corr_data <- subset(corr_data, language == "rsl")
+
+rsl_freq_means<- rsl_corr_data %>%
+  group_by(item, cognate) %>%
+  summarise(
+    Use = mean(Use == "yes", na.rm = TRUE), 
+    freq_rusisk = mean(rusisk_log, na.rm = TRUE),
+    Iconicity = mean(Iconicity, na.rm = TRUE),
+    freq_rsl = mean(freq, na.rm = TRUE)
+  ) %>%
+  arrange(item)
+rsl_freq_means
+
+rsl_correlation <- cor.test(rsl_freq_means$freq_rusisk, rsl_freq_means$freq_rsl, method = "pearson")
+rsl_correlation$estimate
+rsl_correlation$p.value
+```
+(...) However, we extracted corpus-based frequency (excluding five items for which values were unavailable) for the corresponding concepts to our items in Russian and Norwegian and we found that the frequencies for NTS:Norwegian (*R* = `r round(nsl_correlation$estimate,2)`, *p* < `r ifelse(nsl_correlation$p.value < 0.01, "0.00", format(nsl_correlation$p.value, digits = 2, scientific = FALSE))`), and for RSL:Russian (*R* = `r round(rsl_correlation$estimate,2)`, *p* = `r ifelse(rsl_correlation$p.value < 0.01, "0.00", format(p_value_freq, digits = 2, scientific = FALSE))`) are significant positively correlated.
+(...)
+
+# 4.Data analysis
+## Accuracy
+```{r}
+global_acc <- 
+  data_tp %>% 
+  summarise(
+    average = mean(correct)
+  )
+global_acc
+
+
+acc_by_item <-
+  data_tp %>%
+  group_by(item) %>%
+  summarise(
+    average = mean(correct),
+    average_sd = sd(correct)
+    ) %>% arrange(average)
+# acc_by_item
+acc_item <- acc_by_item  %>%
+  # group_by(language) %>% 
+  summarize(
+    mean = mean(average),
+    mean_sd = sd(average),
+    min_acc = min(average),
+    max_acc = max(average)
+   )
+acc_item
+
+acc_by_id <-
+  data_tp %>%
+  group_by(id) %>%
+  summarise(
+    average = mean(correct),
+    average_sd = sd(correct)
+    )
+# acc_by_id
+acc_id <- acc_by_id  %>%
+  summarize(
+    mean = mean(average),
+    mean_sd = sd(average),
+    min_acc = min(average),
+    max_acc = max(average)
+   )
+acc_id
+```
+
+### Accuracy by item
+#### Plot
+```{r}
+# summary
+item_acc_summary <-
+  data_tp %>%
+  group_by(item,condition, language) %>%
+  summarise(average = mean(correct)) %>% 
+  arrange(condition, average, language) 
+item_acc_summary
+
+# hist
+acc_hist <- ggplot(item_acc_summary, aes(x=average)) +
+  geom_histogram(binwidth=0.05, fill="lightgray", color="black") +
+  labs(x="Average", y="Count", title="Average accuracy by item") +
+  theme_minimal()
+# acc_hist
+
+# aligned
+aligned_data <- subset(item_acc_summary, condition == "aligned") # subset aligned
+
+## nsl aligned
+aligned_data_nsl <- subset(aligned_data, language == "nsl") # subset aligned
+aligned_data_nsl$item <- factor(aligned_data_nsl$item, levels = unique(aligned_data_nsl$item))
+
+p_acc_aligned_nsl <- aligned_data_nsl %>% 
+  ggplot(aes(x = item, y = average)) +   
+  coord_flip() +
+  # facet_grid(~language, scales = "free_y") +
+  geom_bar(stat = "identity", fill = "skyblue", width = 0.5) +
+  labs(title = "nsl aligned", x = "item", y = "accuracy") +
+  theme_bw()
+# p_acc_aligned_nsl
+
+## rsl aligned
+aligned_data_rsl <- subset(aligned_data, language == "rsl") # subset aligned
+aligned_data_rsl$item <- factor(aligned_data_rsl$item, levels = unique(aligned_data_rsl$item))
+
+p_acc_aligned_rsl <- aligned_data_rsl %>% 
+  ggplot(aes(x = item, y = average)) +   
+  coord_flip() +
+  # facet_grid(~language, scales = "free_y") +
+  geom_bar(stat = "identity", fill = "skyblue", width = 0.5) +
+  labs(title = "rsl aligned", x = "item", y = "accuracy") +
+  theme_bw()
+# p_acc_aligned_rsl
+
+# nonaligned
+nonaligned_data <- subset(item_acc_summary, condition == "nonaligned") # subset aligned
+
+## nonaligned nsl
+nonaligned_data_nsl <- subset(nonaligned_data, language == "nsl") # subset aligned
+nonaligned_data_nsl$item <- factor(nonaligned_data_nsl$item, levels = unique(nonaligned_data_nsl$item))
+
+p_acc_nonaligned_nsl <- nonaligned_data_nsl %>% 
+  ggplot(aes(x = item, y = average)) +   
+  coord_flip() +
+  # facet_grid(~language, scales = "free_y") +
+  geom_bar(stat = "identity", fill = "darkgreen", width = 0.5) +
+  labs(title = "nsl nonaligned", x = "item", y = "accuracy") +
+  theme_bw()
+# p_acc_nonaligned_nsl
+
+## rsl nonaligned
+nonaligned_data_rsl <- subset(nonaligned_data, language == "rsl") # subset aligned
+nonaligned_data_rsl$item <- factor(nonaligned_data_rsl$item, levels = unique(nonaligned_data_rsl$item))
+
+p_acc_nonaligned_rsl <- nonaligned_data_rsl %>% 
+  ggplot(aes(x = item, y = average)) +   
+  coord_flip() +
+  # facet_grid(~language, scales = "free_y") +
+  geom_bar(stat = "identity", fill = "darkgreen", width = 0.5) +
+  labs(title = "rsl nonaligned", x = "item", y = "accuracy") +
+  theme_bw()
+# p_acc_nonaligned_rsl
+
+
+
+#full combined
+
+# p_diff_facet_bound <- wrap_elements(p_nsl_diff_facet_bound) / wrap_elements(p_rsl_diff_facet_bound) +
+
+p_full_combined <- (
+  wrap_elements(p_acc_aligned_nsl) +
+  wrap_elements(p_acc_nonaligned_nsl) +
+  wrap_elements(p_acc_aligned_rsl) +
+  wrap_elements(p_acc_nonaligned_rsl)
+) +
+plot_layout(ncol = 2) +
+plot_annotation(title = "")
+# p_full_combined
+```
+
+#### Trim
+```{r}
+item_trim <- subset(item_acc_summary, average >= .70) # subset
+
+item_summary <- item_trim %>%
+  distinct(item, condition, language) %>%
+  group_by(item) %>%
+  summarise(n = n_distinct(paste(condition, language))) %>%
+  filter(n == 4)
+item_summary$item <- factor(item_summary$item)
+levels(item_summary$item)
+
+item_summary2 <- subset(item_summary,!item %in% "ring") #remove ring it was not the correct norwegian sign
+levels(item_summary2$item)
+
+```
+
+## Accuracy and RT trimming test
+
+```{r}
+acc_data <- data_tp %>% 
+  semi_join(item_summary2, by = "item") #remove all items with below 70% accuracy
+acc_data$item <- factor(acc_data$item)
+levels(acc_data$item)
+# acc_data <- subset(data_tp, correct == "1") # remove inaccurate trials
+acc_trim_data <- subset(acc_data, rt > 5 & rt < 5000) #trim rt outliers
+levels(acc_trim_data$item)
+trim_count <- nrow(acc_data) - nrow(acc_trim_data)
+trim_count
+trim_percent <- (nrow(acc_data) - nrow(acc_trim_data)) / nrow(acc_data) * 100
+trim_percent
+acc_trim_data$log_rt <- log(acc_trim_data$rt)
+
+# write_csv(acc_trim_data, "../data/acc_trim_data.csv")
+
+item_summary_trimmed <- acc_trim_data %>%
+  distinct(item, condition, language) %>%
+  group_by(item) %>%
+  summarise(n = n_distinct(paste(condition, language))) %>%
+  filter(n == 4)
+item_summary_trimmed$item <- factor(item_summary_trimmed$item)
+trimmed_item_count <- length(item_summary_trimmed$item)
+trimmed_item_count2 <- length(item_summary2$item) #trimmed item count is the same either way you remove trials
+levels(item_summary_trimmed$item)
+# hist(acc_trim_data$log_rt)
+# hist(acc_trim_data$rt) 
+```
+
+Accuracy was automatically coded -– ‘yes’ key-presses after target trials and 'no' key-presses after filler trials were marked as accurate and the reverse as inaccurate. Mean global accuracy  was `r round(global_acc$average [1],2)`; accuracy per item ranged from `r round(acc_item$min_acc [1],2)` to `r round(acc_id$max_acc [1],2)` (*SD* = `r round(acc_id$mean_sd [1],2)`); accuracy per subject ranged from `r round(acc_id$min_acc [1],2)` to `r round(acc_item$max_acc [1],2)` (*SD* = `r round(acc_item$mean_sd [1],2)`). Only accurate trials for items with greater than or equal to 70% accuracy (n = `r trimmed_item_count`) were included in our RT analysis. A-priori screening for reaction time outliers that were faster than 5ms or slower than 5000ms removed `r trim_count` observations (`r round(trim_percent [1],2)`% of the data), a recommended step when using RTs in mixed effects models [@baayen_analyzing_2010]. Reaction times were transformed using a natural logarithm to stabilize the residuals and minimize the impact of outliers. Full documentation of the script used to 
+generate these models and figures is available on our GitHub repository: [(https://GitHub.com/benjaminanible/picture_naming_homologues.git)]
+
+## 4.1 Survey results
+```{r prepare df for modeling }
+acc_trim_data$Iconicity <- as.numeric(as.character(acc_trim_data$Iconicity))
+
+check_survey <-
+  acc_trim_data %>%
+  group_by(language,wordclass) %>%
+  summarise(
+    Use = round(mean(Use == "yes"),2), 
+    Familiarity = round(mean(Familiarity),2),
+    Accuracy = round(mean(correct),2) 
+  )
+# check_survey
+
+
+survey_data <- acc_trim_data %>%
+  mutate(Use = recode_factor(Use,
+                           "yes" = "1",
+                           "no" = "0"))
+
+survey_data$Use <-  as.numeric(as.character(survey_data$Use))
+
+```
+To increase our confidence that reaction time differences are a result of our experimental manipulation and not other factors of the selected stimuli we first present the results of the post task survey as they directly inform the choice of predictors used in the final model. The survey results provide post task control measures for the items in the study given there is currently no lexical database for NSL or RSL like ASL-LEX [@caselliASLLEXLexicalDatabase2017, @sehyrASLLEXProjectDatabase2021]. In the following we report the response statistics for participants' use of, and familiarity with the signs Then we report the results of the sign–-picture similarity rating (hereafter shortened to “iconicity”).
+
+### 4.1.1 Use and familiarity ratings
+```{r use and familiarity models}
+#use and familiarity by language
+summ(use_m <- lm(Use~cognate*language, data = survey_data))
+summ(familiarity_m <- lm(Familiarity~cognate*language, data = survey_data))
+```
+
+```{r report use}
+## Get coefficients, standard errors, t-values, and p-values for use_m
+use_coefficients <- coef(use_m) #b = beats model
+use_standard_errors <- summary(use_m)$coef[, "Std. Error"]
+use_t_values <- summary(use_m)$coef[, "t value"]
+use_p_values <- summary(use_m)$coef[, "Pr(>|t|)"]
+
+# Select the specific values for reporting
+use_beta_noncog <- use_coefficients["cognatenoncognate"] #one for one beat sign)
+use_se_noncog <- use_standard_errors["cognatenoncognate"]
+use_t_noncog <- use_t_values["cognatenoncognate"]
+use_p_noncog <- use_p_values["cognatenoncognate"]
+```
+
+```{r report familiarity}
+## Get coefficients, standard errors, t-values, and p-values for use_m
+fam_coefficients <- coef(familiarity_m) #b = beats model
+fam_standard_errors <- summary(familiarity_m)$coef[, "Std. Error"]
+fam_t_values <- summary(familiarity_m)$coef[, "t value"]
+fam_p_values <- summary(familiarity_m)$coef[, "Pr(>|t|)"]
+
+# Select the specific values for reporting
+fam_beta_noncog <- fam_coefficients["cognatenoncognate"]
+fam_se_noncog <- fam_standard_errors["cognatenoncognate"]
+fam_t_noncog <- fam_t_values["cognatenoncognate"]
+fam_p_noncog <- fam_p_values["cognatenoncognate"]
+```
+
+We found no significant sign type differences between languages by item for use [*β* = `r round(use_beta_noncog, 2)`, *SE* = `r round(use_se_noncog, 2)`, *t*(`r length(use_m$residuals) - 1`) = `r round(use_t_noncog, 2)`, *p* = `r ifelse(use_p_noncog < 0.01, "0.00", format(use_p_noncog, digits = 2, scientific = FALSE))`], nor familiarity [*β* = `r round(fam_beta_noncog, 2)`, *SE* = `r round(fam_se_noncog, 2)`, *t*(`r length(familiarity_m$residuals) - 1`) = `r round(fam_t_noncog, 2)`, *p* = `r ifelse(fam_p_noncog < 0.01, "0.00", format(fam_p_noncog, digits = 2, scientific = FALSE))`] We are therefore confident these terms need not be entered into our model as they were already balanced across the stimuli. Raw values and average accuracy are show in Table 1. 
+
+```{r}
+remove_objects_with_prefix("use_")
+remove_objects_with_prefix("fam_")
+```
+
+
+```{r, results=TRUE}
+print_survey <- check_survey %>%
+  mutate(language = recode(language, "nsl" = "NSL", "rsl" = "RSL"),
+         wordclass = recode(wordclass, "noun" = "Noun", "verb" = "Verb")) %>%
+  rename(Language = language,
+         `Word Class` = wordclass,
+         `Use (% "yes")` = Use,
+         `Familiarity (M)` = Familiarity,
+         `Accuracy (M)` = Accuracy)
+print_survey #copied into ms as "Table 1: Use (percent of yes responses), Familiarity and Accuracy scores (mean values) by language and word class."
+```
+
+### 4.1.2 Sign–picture similarity 
+```{r iconicity models}
+#iconicity
+survey_data_ordered <- survey_data %>% 
+  mutate(cognate = fct_relevel(cognate, "noncognate","cognate"))
+levels(survey_data_ordered$cognate)  
+summ(wordclass_m <- lm(Iconicity~cognate*wordclass, data = survey_data_ordered))
+summ(freq_m <- lm(Iconicity~cognate*freq, data = survey_data_ordered))
+```
+
+```{r report iconicity by word class}
+## Get coefficients, standard errors, t-values, and p-values for use_m
+wc_coefficients <- coef(wordclass_m) #b = beats model
+wc_standard_errors <- summary(wordclass_m)$coef[, "Std. Error"]
+wc_t_values <- summary(wordclass_m)$coef[, "t value"]
+wc_p_values <- summary(wordclass_m)$coef[, "Pr(>|t|)"]
+
+# Select the specific values for reporting
+wc_beta_cog <- wc_coefficients["cognatecognate:wordclassverb"] 
+wc_se_cog <- wc_standard_errors["cognatecognate:wordclassverb"]
+wc_t_cog <- wc_t_values["cognatecognate:wordclassverb"]
+wc_p_cog <- wc_p_values["cognatecognate:wordclassverb"]
+```
+
+```{r report iconicity by frequency}
+## Get coefficients, standard errors, t-values, and p-values for use_m
+freq_coefficients <- coef(freq_m) #b = beats model
+freq_standard_errors <- summary(freq_m)$coef[, "Std. Error"]
+freq_t_values <- summary(freq_m)$coef[, "t value"]
+freq_p_values <- summary(freq_m)$coef[, "Pr(>|t|)"]
+
+# Select the specific values for reporting
+freq_beta_noncog <- freq_coefficients["cognatecognate:freq"] #one for one beat sign)
+freq_se_noncog <- freq_standard_errors["cognatecognate:freq"]
+freq_t_noncog <- freq_t_values["cognatecognate:freq"]
+freq_p_noncog <- freq_p_values["cognatecognate:freq"]
+```
+
+As participants only evaluated the iconicity of signs from their own language, iconicity was not assessed between RSL and NSL. Instead, differences between sign type conditions and word class/corpus frequency were assessed. There was a significant interaction between word class (noun/verb) and sign type where homologous verbs had a higher iconicity rating than distinct verbs [*β* = `r round(wc_beta_cog, 2)`, *SE* = `r round(wc_se_cog, 2)`, *t*(`r length(wordclass_m$residuals) - 1`) = `r round(wc_t_cog, 2)`, *p* = `r ifelse(wc_p_cog < 0.01, "0.00", format(wc_p_cog, digits = 2, scientific = FALSE))`]. There was also no significant interaction for iconicity rating between sign type and frequency [*β* = `r round(freq_beta_noncog, 2)`, *SE* = `r round(freq_se_noncog, 2)`, *t*(`r length(freq_m$residuals) - 1`) = `r round(freq_t_noncog, 2)`, *p* = `r ifelse(freq_p_noncog < 0.01, "0.00", format(freq_p_noncog, digits = 2, scientific = FALSE))`]. Due to the significant by item interaction for word class this was included as fixed effect in the final model.
+
+```{r}
+wordclass_plot <- plot_model(wordclass_m, type = "pred", terms = c("cognate","wordclass")) +
+   labs(x = "Word class", title = "") +
+   theme_bw()
+# wordclass_plot
+
+summ(freq_m <- lm(Iconicity~cognate*freq, data = survey_data_ordered))
+
+freq_plot <- interactions::interact_plot(freq_m, pred = "freq", modx = "cognate") +
+   labs(x = "Frequency", title = "") +
+   theme_bw()
+# freq_plot
+```
+
+## 4.2 Experimental Results
+#### Model prep 
+##### (Sumcode picture condition and cognate condition)
+
+```{r}
+# Sumcode picture condition
+x_rt_model_df <- acc_trim_data %>% mutate(condition = factor(condition, levels = c("nonaligned","aligned"))) #reorder levels so that aligned is reference level.
+contrasts(x_rt_model_df$condition) <- contr.sum(2) #assign sumcoding  
+contrasts(x_rt_model_df$condition)
+#aligned     1 = nonaligned
+#nonaligned -1 = aligned
+
+str(x_rt_model_df)
+lm(rt ~ condition, data = x_rt_model_df) %>%
+tidy %>% select(term, estimate)
+ 
+#the intercept is now equal to the mean of the means 
+x_rt_model_df %>% group_by(condition) %>%
+ summarize(MeanVal = mean(rt)) %>% 
+ summarize(MeanOfMeans = mean(MeanVal)) #fine
+
+# Sumcode cognate condition
+# Note this is referred to as "distinct/homologous" in the ms.
+x_rt_model_df <- x_rt_model_df %>% mutate(cognate = factor(cognate, levels = c("noncognate","cognate"))) #reorder levels so that noncognate = is reference level.
+levels(x_rt_model_df$cognate)
+contrasts(x_rt_model_df$cognate) <- contr.sum(2) #assign sumcoding where
+contrasts(x_rt_model_df$cognate)
+#cognate     1 = noncognate
+#noncognate -1 = cognatealigned
+
+lm(rt ~ cognate, data = x_rt_model_df) %>%
+tidy %>% select(term, estimate)
+ 
+#the intercept is now equal to the mean of the means 
+x_rt_model_df %>% group_by(cognate) %>%
+ summarize(MeanVal = mean(rt)) %>% 
+ summarize(MeanOfMeans = mean(MeanVal)) #fine
+
+##### (z-score iconicity)
+x_rt_model_df$z_iconicity <- scale(x_rt_model_df$Iconicity)
+final_df <- x_rt_model_df
+# write.csv(x_rt_model_df, "../data/final_df.csv")
+```
+
+### RT Model
+```{r}
+#condition  1 = nonaligned
+#cognate    1 = distinct
+head(final_df,2)
+lme_log_rt <- lmer(log_rt ~ condition * cognate + 
+                 language + wordclass + freq +
+               (1 + condition + z_iconicity | id) + 
+               (1 + condition + homophone | item),
+               data = final_df,
+               control = lmerControl(optimizer = 'bobyqa'))
+summ(lme_log_rt)
+
+```
+
+##### (Model reporting)
+```{r}
+## Get coefficients, standard errors, t-values, and p-values for the interaction model 
+summary_lme_rt <- summ(lme_log_rt)
+df <- summary_lme_rt$coeftable[, "d.f."]
+coefficients <- coef(lme_log_rt) #
+# coefficients
+standard_errors <- summary(lme_log_rt)$coef[, "Std. Error"]
+# standard_errors
+t_values <- summary_lme_rt$coeftable[, "t val."]
+# t_values
+p_values <- 2 * (1 - pt(abs(t_values), df)) #use the pt() function to recalculate p values
+# p_values
+
+# Select the specific values for reporting the main effect of condition1 "non-aligned"
+beta_notaligned <- coefficients$id$'condition1'[[1]]
+# beta_notaligned
+se_notaligned <- standard_errors['condition1']
+# se_notaligned
+t_value_notaligned <- t_values['condition1']
+# t_value_notaligned
+t_value_notaligned_residual <- df["condition1"]
+# t_value_notaligned_residual
+p_value_notaligned <- p_values["condition1"]
+# p_value_notaligned
+
+# Select the specific values for reporting the main effect of cognate1 "distinct"
+beta_distinct <- coefficients$id$'cognate1'[[1]]
+# beta_distinct
+se_distinct <- standard_errors['cognate1']
+# se_notaligned
+t_value_distinct <- t_values['cognate1']
+# t_value_notaligned
+t_value_distinct_residual <- df["cognate1"]
+# t_value_distinct_residual
+p_value_distinct <- p_values["cognate1"]
+p_value_distinct
+
+# Select the specific values for reporting the interaction (x)
+beta_x <- coefficients$id$'condition1:cognate1'[[1]]
+se_x <- standard_errors['condition1:cognate1']
+t_value_x <- t_values['condition1:cognate1']
+# t_value_x
+t_value_x_residual <- df["condition1:cognate1"]
+# t_value_x_residual
+p_value_x <- p_values["condition1:cognate1"]
+# p_value_x
+
+# Select the specific values for reporting language
+beta_lg <- coefficients$id$'languagersl'[[1]]
+# beta_lg
+se_lg <- standard_errors['languagersl']
+# se_lg
+t_value_lg <- t_values['languagersl']
+# t_value_lg
+t_value_lg_residual <- df["languagersl"]
+# t_value_lg_residual
+p_value_lg <- p_values["languagersl"]
+# p_value_lg
+
+# Select the specific values for reporting word class (pos)
+beta_pos <- coefficients$id$'wordclassverb'[[1]]
+# beta_pos
+se_pos <- standard_errors['wordclassverb']
+# se_pos
+t_value_pos <- t_values['wordclassverb']
+# t_value_pos
+t_value_pos_residual <- df["wordclassverb"]
+# t_value_pos_residual
+p_value_pos <- p_values["wordclassverb"]
+# p_value_pos
+
+#pull frequency range
+freq_range <- x_rt_model_df %>% 
+  # group_by(Group) %>%
+  summarize(minFreq = min(freq), 
+            maxFreq = max(freq)
+  )
+freq_range <- as.data.frame(freq_range)
+freq_min <- freq_range[1,1]
+# freq_min
+freq_max <- freq_range[1,2]
+# freq_max
+
+# Select the specific values for reporting freq
+beta_freq <- coefficients$id$'freq'[[1]]
+# beta_freq
+se_freq <- standard_errors['freq']
+# se_freq
+t_value_freq <- t_values['freq']
+# t_value_freq
+t_value_freq_residual <- df["freq"]
+# t_value_freq_residual
+p_value_freq <- p_values["freq"]
+# p_value_freq
+
+```
+A mixed-effects model using the `lme4` package was estimated in R version 4.2.3 [@R-base] with the picture (non-aligned/aligned) and sign type (homologue/distinct) conditions as the key interaction terms. The model also specified crossed random effects for participants and items with slopes for picture type, and iconicity ratings with slopes for participants. Both picture and sign type conditions were contrast coded to allow for interpretation of main effects. Iconicity ratings were standardized. P-values were calculated using the `lmerTest` package [@kuznetsova_lmertest_2017]. The "bobyqa" optimizer was used to enhance the convergence of the model. 
+  There was a main effect of picture type such that non-aligned pictures were processed slower than the aligned condition (*β* = `r round(beta_notaligned, 2)`, *SE* = `r round(se_notaligned, 2)`, *t*(`r round(t_value_notaligned_residual,2)`) = `r round(t_value_notaligned, 2)`, *p* = `r ifelse(p_value_notaligned < 0.01, "0.00", format(p_value_notaligned, digits = 2, scientific = FALSE))`), but no main effect of sign type (*β* = `r round(beta_distinct, 2)`, *SE* = `r round(se_distinct, 2)`, *t*(`r round(t_value_distinct_residual,2)`) = `r round(t_value_distinct, 2)`, *p* = `r ifelse(p_value_distinct < 0.01, "0.00", format(p_value_distinct, digits = 2, scientific = FALSE))`). There was, however, a significant interaction between picture and sign type such that non-aligned pictures for dissimilar signs had slower reaction times than aligned pictures for similar signs (*β* = `r round(beta_x, 2)`, *SE* = `r round(se_x, 2)`, *t*(`r round(t_value_x_residual,2)`) = `r round(t_value_x, 2)`, *p* = `r ifelse(p_value_x < 0.01, "0.00", format(p_value_x, digits = 2, scientific = FALSE))`.) The figure below (figure x) plots the unfitted average RT per participant by condition and sign type with the `RainCloudPlots` package [@allen_raincloud_2019]. 
+  
+### Plot
+```{r, fig.height=5.8, fig.width=5.6, fig.cap="Figure 6. Untransformed target trial RTs by sign and picture type. The half-violin plot illustrates the density of the data, and the box plot shows median, quartiles, and outliers."}
+x_acc_trim_data_plot <- x_rt_model_df %>%
+  mutate(condition = recode_factor(condition,
+                           "aligned" = "Aligned",
+                           "nonaligned" = "Non-aligned")) %>%
+  mutate(cognate = recode_factor(cognate,
+                           "cognate" = "Homologous",
+                           "noncognate" = "Distinct"))
+head(x_acc_trim_data_plot)
+str(x_acc_trim_data_plot)
+colnames(x_acc_trim_data_plot)[colnames(x_acc_trim_data_plot) == "condition"] ="Picture"
+colnames(x_acc_trim_data_plot)[colnames(x_acc_trim_data_plot) == "cognate"] ="SignType"
+global_avg <- mean(x_acc_trim_data_plot$rt, na.rm = TRUE)
+
+x_rt_plot <- ggplot(x_acc_trim_data_plot,aes(x=SignType,y=rt,fill=Picture))+
+  geom_flat_violin(aes(fill=Picture),position=position_nudge(x=.1,y=0),adjust=1.5,trim=T,alpha=.5,colour=NA)+
+  geom_point(aes(x=SignType,y=rt,colour=Picture),position=position_jitter(width=.1, height =.4),size=3,shape=20)+
+  geom_boxplot(aes(x=SignType,y=rt,fill=Picture),outlier.shape=NA,alpha=.5,width=.5,colour="black")+
+  scale_colour_brewer(palette="Dark2")+
+  # scale_fill_manual(values = c("#f8766d", "#00BFC4")) +
+  scale_fill_brewer(palette="Dark2")+
+  labs(subtitle = "", x="Sign Type", y = "Reaction time (ms)") +
+  coord_flip() +
+  # facet_wrap(~language, nrow = 1, strip.position = "top") +
+  theme(text = element_text(size=40)) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+x_rt_plot +
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"),
+        plot.subtitle = element_text(size = 14, face = "italic"),
+        plot.title = element_text(size = 15, face = "bold")
+  )
+ggsave(filename = "../figures/Figure 6 - Untransformed target trial RTs by sign and picture type.png", x_rt_plot,width = 5.8, height = 5.6, dpi = 500, units = "in", device='png')
+```
+  Additionally, language (RSL/NSL), word class (noun/verb), frequency [lowest value of log(`r freq_min`) -- highest value of log(`r freq_max`)] are fixed effects and assumed to be constant, meaning their impact on reaction time should be repeatable with a different set of items and participants. These values are summarized in Table 2 below generated with `pixiedust` package [@pixiedust]. Neither word class (*β* = `r round(beta_pos, 2)`, *SE* = `r round(se_pos , 2)`, *t*(`r round(t_value_pos_residual,2)`) = `r round(t_value_pos, 2)`, *p* = `r ifelse(p_value_pos < 0.01, "0.00", format(p_value_pos, digits = 2, scientific = FALSE))`) nor language (*β* = `r round(beta_lg, 2)`, *SE* = `r round(se_lg , 2)`, *t*(`r round(t_value_lg_residual,2)`) = `r round(t_value_lg, 2)`, *p* = `r ifelse(p_value_lg < 0.01, "0.00", format(p_value_lg, digits = 2, scientific = FALSE))`) showed significant main effects. This allows us to conclude that they are not obscuring the effects of experimental manipulation. 
+  
+##### (Main effects table)
+```{r, results=TRUE}
+# https://cran.r-project.org/web/packages/pixiedust/vignettes/pixiedust.html
+tidy_lme_rt <- broom.mixed::tidy(lme_log_rt, effects = "fixed")
+tidy_lme_rt_selected <- tidy_lme_rt %>%
+  slice(1:10) %>%  # Keep only the first 10 rows
+  select(-effect)  # Remove the 'group' column
+dust <- dust(tidy_lme_rt_selected) %>% 
+  sprinkle(cols = "term", 
+           replace = c("Intercept", "Nonaligned", "Distinct",
+                        "RSL","Verb","Log Frequency",
+                       "Nonaligned:Distinct")) %>%
+  sprinkle(cols = c("estimate", "std.error", "statistic","df"),
+           round = 2) %>% 
+  sprinkle(cols = "p.value", fn = quote(pvalString(value))) %>% 
+  sprinkle_colnames("Term", "Coefficient", "SE", "T-statistic", "DF", "P-value") 
+dust2 <- as.data.frame(dust)  
+dust2
+```
+
+  Alongside main effects, we also expected participants to vary on an individual basis in how they reacted to the different items in the experiment and factored this variation out of the effect of seeing a picture that profiles their own language's iconicity vs that of another language. This is why the average by participant and picture type was separately calculated and subtracted from the grand means of picture type and sign type conditions. Theoretically, we also want to allow for subjective assessment of items' iconicity. By including the picture--sign similarity ("iconicity") ratings with slopes for participants the model "knows" that some participants will find some pictures a better representation of their own construal of an item's iconicity than others. 
+  As we assume that participants would react to individual items differently regardless of the experimental condition, the model also specified crossed random effects for participants and items with slopes for picture type. Critically for our theoretical perspective, picture--sign similarity ("iconicity") ratings with slopes for participants allowed subjective evaluations of signers' construal of form meaning mappings.
+
+### 4.2.1 Residuals and model criticism
+
+```{r}
+relgrad <- with(lme_log_rt@optinfo$derivs,solve(Hessian,gradient))
+report_relgrad <- max(abs(relgrad))
+report_relgrad
+
+rsquared <- r.squaredGLMM(lme_log_rt)
+rsquared[,1]
+rsquared[,2]
+```
+
+  The marginal R-squared was `r round(rsquared[,1],2)`, and the conditional R-squared was `r round(rsquared[,2],2)` indicating that the fixed effects and random effects together accounted for `r round(rsquared[,2]*100,2)`% of the variance in the participants' reaction times. Additionally, model criticism via visual inspection of residuals and fitted values indicate that the normality and constant variance assumptions were adequately met. These plots are available on our GitHub.
+```{r}
+# fig.cap = "Figure 7. (a) Histogram; (b) Q-Q plot; and (c) residuals plot to assess the normality and constant variance assumptions for the model"
+png("../figures/residuals_plots.png", width = 800, height = 400,res = 100)# Save the plots as a PNG file
+par(mfrow = c(1, 3), pty = "s", mar = c(5, 4, 2, 1) + 0.1) #set graphing parameters 
+hist(residuals(lme_log_rt), col = "skyblue2", 
+     main = "(a) Model residuals", 
+     ylab = expression(bold("Frequency")),
+     xlab = expression(bold("Residuals"))
+     )
+qqnorm(residuals(lme_log_rt), 
+       main = "(b) Q-Q plot of residuals", 
+       ylab = expression(bold("Sample Quantiles")),
+       xlab = expression(bold("Theoretical Quantiles"))
+       )
+qqline(residuals(lme_log_rt))
+plot(fitted(lme_log_rt), residuals(lme_log_rt), 
+     main = "(c) Residuals plot", 
+     ylab = expression(bold("Residuals")),
+     xlab = expression(bold("Fitted values"))
+     )
+abline(h = 0, col = "red", lwd = 2)
+dev.off() #turn of the plotting function so that it saves successfully.
+par(mfrow = c(1,1)) #reset
+```
+
+# 5. Discussion
+
+## 5.1 Main effects of item and participant variables
+
+In keeping with studies that find part of speech, frequency, telicity, and animacy may affect processing of iconicity we balanced our stimuli for these factors, but found no effects, allowing us to be more confident that the effects of picture naming condition were the key features affecting differences in response time. 
+
+## (Demographics models)
+### (rsl)
+```{r}
+x_rt_model_df_rsl <- subset(x_rt_model_df, language == "rsl")
+colnames(x_rt_model_df_rsl)
+lm_rt_rsl0 <- lm(rt ~ learned  +
+                     + age + deafbirth + learned + peers, #removed practice not enough levels
+                 x_rt_model_df_rsl)
+summ(lm_rt_rsl0)
+
+lm_rt_rsl1 <- lm(rt ~ cognate*learned  +
+                      age + deafbirth + learned + peers, #removed practice not enough levels
+                 x_rt_model_df_rsl)
+rsl_demo_anova <- anova(lm_rt_rsl0,lm_rt_rsl1)
+rsl_demo_anova
+# Get df, res.df, f-values, and p-values 
+rsl_demo_anova_df <- rsl_demo_anova$Df[2] #note this has more df than the nsl because learned has more levels than peers
+# rsl_demo_anova_df
+rsl_demo_anova_res.df <- rsl_demo_anova$Res.Df[2]
+# rsl_demo_anova_res.df
+rsl_demo_anova_f_value <- round(rsl_demo_anova$`F`[2],2)
+rsl_demo_anova_f_value
+rsl_demo_anova_p_value <- rsl_demo_anova$`Pr(>F)`[2]
+# nsl_demo_anova_p_value
+
+
+summ(lm_rt_rsl0)
+
+# Get coefficients, standard errors, t-values, and p-values for m_hands
+rsl_demo_coefs <- coef(lm_rt_rsl0) 
+rsl_demo_ses<- summary(lm_rt_rsl0)$coef[, "Std. Error"]
+rsl_demo_t_vals <- summary(lm_rt_rsl0)$coef[, "t value"]
+rsl_demo_p_vals <- summary(lm_rt_rsl0)$coef[, "Pr(>|t|)"]
+
+rsl_demo_beta <- rsl_demo_coefs["learnedparents"] 
+# rsl_demo_beta
+rsl_demo_se <- rsl_demo_ses["learnedparents"]
+# rsl_demo_se
+rsl_demo_t <- rsl_demo_t_vals["learnedparents"]
+# rsl_demo_t
+rsl_demo_p <- rsl_demo_p_vals["learnedparents"]
+# rsl_demo_p
+```
+
+### (nsl)
+```{r}
+x_rt_model_df_nsl <- subset(x_rt_model_df, language == "nsl")
+colnames(x_rt_model_df_nsl)
+lm_rt_nsl0 <- lm(rt ~ peers + age + deafbirth +  practice + learned,
+                 x_rt_model_df_nsl)
+lm_rt_nsl1 <- lm(rt ~ cognate*peers +
+                     + age + deafbirth +  practice + learned,
+                 x_rt_model_df_nsl)
+nsl_demo_anova <- anova(lm_rt_nsl0,lm_rt_nsl1)
+nsl_demo_anova
+
+# Get df, res.df, f-values, and p-values 
+nsl_demo_anova_df <- nsl_demo_anova$Df[2]
+# nsl_demo_anova_df
+nsl_demo_anova_res.df <- nsl_demo_anova$Res.Df[2]
+# nsl_demo_anova_res.df
+nsl_demo_anova_f_value <- round(nsl_demo_anova$`F`[2],2)
+# nsl_demo_anova_f_value
+nsl_demo_anova_p_value <- nsl_demo_anova$`Pr(>F)`[2]
+nsl_demo_anova_p_value
+
+
+summ(lm_rt_nsl0)
+# Get coefficients, standard errors, t-values, and p-values 
+# lm_rt_nsl0$residuals
+nsl_demo_coefs <- coef(lm_rt_nsl0) 
+nsl_demo_ses<- summary(lm_rt_nsl0)$coef[, "Std. Error"]
+nsl_demo_t_vals <- summary(lm_rt_nsl0)$coef[, "t value"]
+nsl_demo_p_vals <- summary(lm_rt_nsl0)$coef[, "Pr(>|t|)"]
+
+nsl_demo_beta <- nsl_demo_coefs["peersyes"] 
+# nsl_demo_beta
+nsl_demo_se <- nsl_demo_ses["peersyes"]
+# nsl_demo_se
+nsl_demo_t <- nsl_demo_t_vals["peersyes"]
+# nsl_demo_t
+nsl_demo_p <- nsl_demo_p_vals["peersyes"]
+nsl_demo_p
+```
+
+We additionally fit two separate multiple regressions on RT for a subset of the responses from our participant demographics survey. Questions modeled were: 1. “Age?”, 8. “Born Deaf?” (yes / no), 10. “How did you get in contact with RSL/NTS?” (caregivers / parents / school / other), 12. “Did/do you use RSL/NTS in school with your peers?” (yes/no), and 15. “How often do you use RSL/NTS?” (daily / often). 
+  
+  For both groups there was a significant effect of age (not reported). It is well known that average reaction time increases with age [@10.1093/geronj/49.4.P179]. For Russian signers the only significant factor was whether RSL was learned from a parent [*β* = `r round(rsl_demo_beta, 2)`, *SE* = `r round(rsl_demo_se, 2)`, *t*(`r length(lm_rt_nsl0$residuals) - 1`) = `r round(rsl_demo_t, 2)`, *p* = `r ifelse(rsl_demo_p < 0.01, "0.00", format(rsl_demo_p, digits = 2, scientific = FALSE))`]. For Norwegians the only significant factor was whether they had the opportunity to use NSL with signing peers during their school years [*β* = `r round(nsl_demo_beta, 2)`, *SE* = `r round(nsl_demo_se, 2)`, *t*(`r length(lm_rt_nsl0$residuals) - 1`) = `r round(nsl_demo_t, 2)`, *p* = `r ifelse(nsl_demo_p < 0.01, "0.00", format(nsl_demo_p, digits = 2, scientific = FALSE))`]. We did not include these as interaction terms in the main analysis as there was no significant difference between the models with or without the interaction of the cognate condition by respective demographic term (cognate by question 10, or cognate by question 12). ANOVA results indicate that the addition of the interaction term between cognate and peers did not significantly improve the model fit for NSL [F(`r nsl_demo_anova_df`), `r nsl_demo_anova_res.df`) = `r nsl_demo_anova_p_value`),(p = `r ifelse(nsl_demo_anova_p_value < 0.01, "0.00", format(nsl_demo_anova_p_value, digits = 2, scientific = FALSE))`)], nor RSL [F(`r rsl_demo_anova_df`), `r rsl_demo_anova_res.df`) = `r rsl_demo_anova_f_value`),(p = `r ifelse(rsl_demo_anova_f_value < 0.01, "0.00", format(rsl_demo_anova_f_value, digits = 2, scientific = FALSE))`)].
+
+
+# References

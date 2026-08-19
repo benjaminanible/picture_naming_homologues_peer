@@ -1,0 +1,7 @@
+1. download individual files from gorilla from participants, status = complete
+2. unzip in \Dropbox\Research\DEPICT\WP1\data\v2 nsl
+3. open lysy and copy info to https://docs.google.com/spreadsheets/d/1znEs5m9oArgD4tb3TnoTuZGLv44uSfsw2xeFSyLFc20/edit?usp=sharing (nsl only)
+4. copy (n49w,eu79) to Dropbox\Research\DEPICT\WP1\data\v2 nsl\data\picturenaming
+5. copy qcg3 to Dropbox\Research\DEPICT\WP1\data\v2 nsl\data\familiarityratings
+6. copy zt1x to Dropbox\Research\DEPICT\WP1\data\v2 nsl\data\backgroundquestionnaires
+
